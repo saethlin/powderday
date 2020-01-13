@@ -4,10 +4,6 @@ import yt
 from yt.fields.particle_fields import add_volume_weighted_smoothed_field
 import powderday.config as cfg
 
-from astropy.cosmology import Planck13
-import astropy.units as u
-from powderday.front_ends.redshift_multithread import redshift_vectorized
-
 
 def gadget_field_add(fname,bounding_box = None,ds=None,starages=False):
     
@@ -120,23 +116,22 @@ def gadget_field_add(fname,bounding_box = None,ds=None,starages=False):
             print ('[SED_gen/star_list_gen: ] Idealized Galaxy Simulation Assumed: Simulation time is (Gyr): ',simtime)
             print ('--------------\n')
         else:
-            simtime = Planck13.age(data.ds.current_redshift).to(u.Gyr).value #what is the age of the Universe right now?
-            
+            yt_cosmo = yt.utilities.cosmology.Cosmology(hubble_constant=data.ds.hubble_constant,
+                                                        omega_matter=data.ds.omega_matter,
+                                                        omega_lambda=data.ds.omega_lambda)
+            simtime = yt_cosmo.t_from_z(ds.current_redshift).in_units('Gyr').value  # Current age of the universe
             scalefactor = ad[("starformationtime")].value
-            formation_z = (1./scalefactor)-1.
-            
-            formation_time = redshift_vectorized(formation_z)
-            #drop the Gyr unit
-            formation_time = np.asarray([formation_time[i].value for i in range(len(formation_time))])
-           
+            formation_z = (1. / scalefactor) - 1.
+            formation_time = yt_cosmo.t_from_z(formation_z).in_units('Gyr').value
             age = simtime - formation_time
-            #make the minimum age 1 million years 
+            # Minimum age is set to 1 Myr (FSPS doesn't work properly for ages below 1 Myr)
             age[np.where(age < 1.e-3)[0]] = 1.e-3
 
-        
-            print ('\n--------------')
-            print ('[SED_gen/star_list_gen: ] Cosmological Galaxy Simulation Assumed: Current age of Universe is (Assuming Planck13 Cosmology) is (Gyr): ',simtime)
-            print ('--------------\n')
+            print('\n--------------')
+            print(
+                '[SED_gen/star_list_gen: ] Cosmological Galaxy Simulation Assumed: Current age of Universe is (Gyr): ',
+                simtime)
+            print('--------------\n')
                 
         age = data.ds.arr(age,'Gyr')
         return age
@@ -156,8 +151,7 @@ def gadget_field_add(fname,bounding_box = None,ds=None,starages=False):
         c = yt.utilities.physical_constants.speed_of_light_cgs
         bhluminosity = (cfg.par.BH_eta * mdot * c**2.).in_units("erg/s")
         if cfg.par.BH_var:
-            from powderday.agn_models.hickox import vary_bhluminosity
-            return vary_bhluminosity(bhluminosity)
+            return bhluminosity * cfg.par.bhlfrac
         else:
             return bhluminosity
         
@@ -267,16 +261,17 @@ def gadget_field_add(fname,bounding_box = None,ds=None,starages=False):
 
     if cfg.par.BH_SED == True:
         try:
-            if len(ds.all_data()[('PartType5', 'BH_Mass')]) > 0:
+            nholes = len(ds.all_data()[('PartType5', 'BH_Mass')])
+            if nholes > 0:
                 if cfg.par.BH_model == 'Nenkova':
                     from powderday.agn_models.nenkova import Nenkova2008
-                    try:
-                        model = Nenkova2008(cfg.par.nenkova_params)
-                    except:
-                        model = Nenkova2008
-                    agn_spectrum = model.agn_spectrum
+                    agn_spectrum = Nenkova2008(*cfg.par.nenkova_params).agn_spectrum
                 else:
                     from powderday.agn_models.hopkins import agn_spectrum
+
+                if cfg.par.BH_var:
+                    from powderday.agn_models.hickox import vary_bhluminosity
+                    cfg.par.bhlfrac = vary_bhluminosity(nholes)
 
                 ds.add_field(("bhluminosity"),function=_bhluminosity,units='erg/s',particle_type=True)
                 ds.add_field(("bhcoordinates"),function=_bhcoordinates,units="cm",particle_type=True)
